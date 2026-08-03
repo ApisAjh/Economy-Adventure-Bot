@@ -6,6 +6,7 @@ from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from config.settings import ADMIN_ID
 from database.database import get_session
 from database.models import User
 from utils.economy import calculate_net_worth
@@ -16,7 +17,9 @@ def _back_button() -> InlineKeyboardMarkup:
 
 
 async def _build_ranking_text(session) -> str:
-    result = await session.execute(select(User).where(User.is_banned.is_(False)))
+    result = await session.execute(
+        select(User).where(User.is_banned.is_(False), User.telegram_id != ADMIN_ID)
+    )
     users = result.scalars().all()
 
     scored = []
