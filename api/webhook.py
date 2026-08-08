@@ -9,6 +9,7 @@ Menggunakan:
 """
 
 import sys
+import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -42,6 +43,7 @@ from handlers import (
     achievement,
     admin,
     bank,
+    couple,
     daily,
     duel,
     event,
@@ -78,6 +80,20 @@ application = (
 
 _initialized = False
 _started = False
+
+def _describe_update(update: Update) -> str:
+    """Label ringkas untuk [PERF] log: nama command/callback + user_id, tanpa data sensitif."""
+    user_id = update.effective_user.id if update.effective_user else "?"
+
+    if update.message and update.message.text and update.message.text.startswith("/"):
+        command = update.message.text.split()[0].split("@")[0]
+        return f"{command} user={user_id}"
+
+    if update.callback_query and update.callback_query.data:
+        return f"cb:{update.callback_query.data} user={user_id}"
+
+    return f"update user={user_id}"
+
 
 async def _global_error_handler(
     update: object,
@@ -166,9 +182,13 @@ def _register_handlers(app_: Application):
         ("mine", mining.mine_handler),
         ("pet", pet.pet_handler),
         ("duel", duel.duel_handler),
-        ("ranking", ranking.ranking_callback),
+        ("ranking", ranking.ranking_handler),
         ("achievement", achievement.achievement_handler),
         ("event", event.event_handler),
+        ("propose", couple.propose_handler),
+        ("couple", couple.couple_handler),
+        ("divorce", couple.divorce_handler),
+        ("love", couple.love_handler),
         ("admin", admin.admin_handler),
         ("cancel", admin.admin_cancel_handler),
     ]
@@ -207,6 +227,11 @@ def _register_handlers(app_: Application):
         ("^menu_ranking$", ranking.ranking_callback),
         ("^menu_achievement$", achievement.achievement_callback),
         ("^menu_event$", event.event_callback),
+        ("^menu_couple$", couple.couple_callback),
+        ("^coupleaccept_", couple.couple_accept_callback),
+        ("^coupledecline_", couple.couple_decline_callback),
+        ("^divorce_confirm$", couple.divorce_confirm_callback),
+        ("^divorce_cancel$", couple.divorce_cancel_callback),
         ("^admin_", admin.admin_menu_callback),
     ]
 
@@ -310,9 +335,18 @@ async def telegram_webhook(
             )
 
 
+        # PERF LOGGING: waktu total memproses satu update, ringan (1 baris log,
+        # tanpa data sensitif seperti coin/balance/isi pesan) agar tidak memenuhi
+        # Vercel logs tapi tetap bisa dipakai untuk mengukur bottleneck nyata.
+        started_at = time.monotonic()
+        label = _describe_update(update)
+
         await application.process_update(
             update
         )
+
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        logger.info("[PERF] %s total=%.0fms", label, elapsed_ms)
 
 
     except TelegramError:
