@@ -14,7 +14,7 @@
 --
 -- Urutan tabel mengikuti urutan dependensi Foreign Key:
 --   users -> inventory, pets, bank_transactions, market, cooldown,
---            farming, achievements
+--            farming, achievements, couples, couple_proposals
 --   events (berdiri sendiri, tanpa Foreign Key)
 -- =====================================================================
 
@@ -169,6 +169,11 @@ CREATE TABLE IF NOT EXISTS market (
 
 CREATE INDEX IF NOT EXISTS ix_market_seller_id ON market (seller_id);
 
+-- PERF: _list_market selalu memfilter status='open' lalu ORDER BY created_at DESC.
+-- Index komposit ini membuat query tersebut memakai index scan yang sudah terurut,
+-- bukan seq scan + sort terpisah.
+CREATE INDEX IF NOT EXISTS ix_market_status_created ON market (status, created_at DESC);
+
 
 -- =====================================================================
 -- TABEL: cooldown
@@ -181,7 +186,12 @@ CREATE TABLE IF NOT EXISTS cooldown (
     last_used       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT fk_cooldown_user
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+
+    -- PERF/SAFETY: satu baris cooldown per (user, command). Dipakai oleh set_cooldown()
+    -- untuk melakukan upsert (INSERT ... ON CONFLICT) dalam 1 query, dan mencegah baris
+    -- duplikat jika dua request command yang sama diproses hampir bersamaan.
+    CONSTRAINT uq_cooldown_user_command UNIQUE (user_id, command)
 );
 
 CREATE INDEX IF NOT EXISTS ix_cooldown_user_id ON cooldown (user_id);
@@ -209,6 +219,10 @@ CREATE TABLE IF NOT EXISTS farming (
 
 CREATE INDEX IF NOT EXISTS ix_farming_user_id ON farming (user_id);
 
+-- PERF: _get_active_farm selalu memfilter user_id + status IN ('growing','ready').
+-- Index komposit menghindari scan seluruh riwayat farming user (termasuk yang 'harvested').
+CREATE INDEX IF NOT EXISTS ix_farming_user_status ON farming (user_id, status);
+
 
 -- =====================================================================
 -- TABEL: achievements
@@ -222,10 +236,71 @@ CREATE TABLE IF NOT EXISTS achievements (
     completed_at    TIMESTAMPTZ,
 
     CONSTRAINT fk_achievements_user
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+
+    -- Mencegah baris achievement duplikat untuk user+achievement yang sama.
+    CONSTRAINT uq_achievement_user_name UNIQUE (user_id, achievement)
 );
 
 CREATE INDEX IF NOT EXISTS ix_achievements_user_id ON achievements (user_id);
+
+
+-- =====================================================================
+-- TABEL: couples
+-- Relasi pasangan (aktif maupun sudah berakhir) antar dua pemain.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS couples (
+    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id         INTEGER NOT NULL,
+    partner_id      INTEGER NOT NULL,
+    love_level      INTEGER NOT NULL DEFAULT 0,
+    status          VARCHAR(20) NOT NULL DEFAULT 'active',   -- active / ended
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ended_at        TIMESTAMPTZ,
+
+    CONSTRAINT fk_couples_user
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_couples_partner
+        FOREIGN KEY (partner_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT ck_couples_not_self CHECK (user_id != partner_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_couples_user_id ON couples (user_id);
+CREATE INDEX IF NOT EXISTS ix_couples_partner_id ON couples (partner_id);
+
+-- ANTI-EXPLOIT (double marriage): partial unique index memastikan satu user_id hanya
+-- boleh muncul di MAKSIMAL satu baris couples berstatus 'active', baik dia tercatat
+-- sebagai user_id ATAUPUN partner_id di baris tersebut.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_couples_user_active
+    ON couples (user_id) WHERE (status = 'active');
+CREATE UNIQUE INDEX IF NOT EXISTS uq_couples_partner_active
+    ON couples (partner_id) WHERE (status = 'active');
+
+
+-- =====================================================================
+-- TABEL: couple_proposals
+-- Lamaran pasangan (pending/accepted/rejected/expired), punya masa berlaku.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS couple_proposals (
+    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sender_id       INTEGER NOT NULL,
+    receiver_id     INTEGER NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending/accepted/rejected/expired
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL,
+
+    CONSTRAINT fk_couple_proposals_sender
+        FOREIGN KEY (sender_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT fk_couple_proposals_receiver
+        FOREIGN KEY (receiver_id) REFERENCES users (id) ON DELETE CASCADE,
+    CONSTRAINT ck_couple_proposals_not_self CHECK (sender_id != receiver_id),
+    CONSTRAINT ck_couple_proposals_status_valid
+        CHECK (status IN ('pending', 'accepted', 'rejected', 'expired'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_couple_proposals_receiver_status ON couple_proposals (receiver_id, status);
+CREATE INDEX IF NOT EXISTS ix_couple_proposals_sender_status ON couple_proposals (sender_id, status);
 
 
 -- =====================================================================

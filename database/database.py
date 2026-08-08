@@ -19,7 +19,10 @@ engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=False,
     poolclass=NullPool,
-    pool_pre_ping=True,
+    # PERF: pool_pre_ping sengaja TIDAK diaktifkan. pre_ping berguna untuk mendeteksi
+    # koneksi basi yang diambil dari pool - tapi NullPool selalu membuka koneksi BARU
+    # setiap kali (tidak pernah reuse), sehingga pre_ping di sini hanya menambah 1
+    # round-trip "SELECT 1" ekstra ke database di SETIAP request tanpa manfaat nyata.
 )
 
 AsyncSessionLocal = async_sessionmaker(
