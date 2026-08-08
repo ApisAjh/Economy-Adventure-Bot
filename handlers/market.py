@@ -89,7 +89,13 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("Format salah. Contoh: /market buy 3")
                 return
 
-            result = await session.execute(select(Market).where(Market.id == listing_id, Market.status == "open"))
+            # PERF/SAFETY: FOR UPDATE mengunci baris listing ini sampai transaksi selesai,
+            # sehingga dua pembeli yang menekan /market buy <id> bersamaan tidak bisa
+            # keduanya lolos pengecekan status=='open' sebelum salah satunya commit
+            # (mencegah exploit "double sell" satu listing).
+            result = await session.execute(
+                select(Market).where(Market.id == listing_id, Market.status == "open").with_for_update()
+            )
             listing = result.scalar_one_or_none()
 
             if listing is None:
@@ -126,7 +132,9 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("Format salah. Contoh: /market cancel 3")
                 return
 
-            result = await session.execute(select(Market).where(Market.id == listing_id, Market.status == "open"))
+            result = await session.execute(
+                select(Market).where(Market.id == listing_id, Market.status == "open").with_for_update()
+            )
             listing = result.scalar_one_or_none()
 
             if listing is None or listing.seller_id != user.id:

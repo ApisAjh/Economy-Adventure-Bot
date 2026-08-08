@@ -30,13 +30,18 @@ def _is_target_reached(user: User, check_field: str, target) -> bool:
     return value >= target
 
 
-async def _sync_achievements(session, user: User) -> list[str]:
-    """Mengecek dan mencatat achievement baru yang tercapai. Return daftar nama achievement baru."""
+async def _sync_achievements(session, user: User) -> tuple[list[str], dict[str, Achievement]]:
+    """Mengecek dan mencatat achievement baru yang tercapai.
+    Return (daftar nama achievement baru, dict semua record achievement user ini)."""
     result = await session.execute(select(Achievement).where(Achievement.user_id == user.id))
     existing = {a.achievement: a for a in result.scalars().all()}
 
     newly_completed = []
+    created_any = False
 
+    # PERF: versi lama memanggil session.flush() di setiap iterasi loop saat membuat baris
+    # achievement baru (bisa sampai 1 round-trip per achievement yang belum tercatat).
+    # Sekarang semua insert dikumpulkan dan di-flush SEKALI saja di akhir.
     for name, data in ACHIEVEMENTS.items():
         reached = _is_target_reached(user, data["check"], data["target"])
         record = existing.get(name)
@@ -44,7 +49,8 @@ async def _sync_achievements(session, user: User) -> list[str]:
         if record is None:
             record = Achievement(user_id=user.id, achievement=name, completed=False)
             session.add(record)
-            await session.flush()
+            existing[name] = record
+            created_any = True
 
         if reached and not record.completed:
             record.completed = True
@@ -52,14 +58,16 @@ async def _sync_achievements(session, user: User) -> list[str]:
             await add_coin(user, ACHIEVEMENT_REWARD_COIN)
             newly_completed.append(name)
 
-    return newly_completed
+    if created_any:
+        await session.flush()
+
+    return newly_completed, existing
 
 
 async def _build_achievement_text(session, user: User) -> str:
-    newly_completed = await _sync_achievements(session, user)
-
-    result = await session.execute(select(Achievement).where(Achievement.user_id == user.id))
-    records = {a.achievement: a for a in result.scalars().all()}
+    # PERF: versi lama query ulang seluruh achievement user setelah _sync_achievements,
+    # padahal _sync_achievements sudah punya semua object-nya di memory (query kedua dihapus).
+    newly_completed, records = await _sync_achievements(session, user)
 
     lines = ["📜 Achievement\n"]
     for name, data in ACHIEVEMENTS.items():

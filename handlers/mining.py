@@ -21,8 +21,10 @@ def _back_button() -> InlineKeyboardMarkup:
 
 
 async def _has_pickaxe(session, user_id: int) -> bool:
+    # PERF: hanya SELECT kolom id (bukan SELECT * / seluruh row) karena kita hanya butuh tahu
+    # apakah barisnya ada, bukan datanya.
     result = await session.execute(
-        select(Inventory).where(Inventory.user_id == user_id, Inventory.item_name == "Pickaxe")
+        select(Inventory.id).where(Inventory.user_id == user_id, Inventory.item_name == "Pickaxe").limit(1)
     )
     return result.scalar_one_or_none() is not None
 

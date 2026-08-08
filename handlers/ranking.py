@@ -2,14 +2,16 @@
 Handler /ranking - Top 10 pemain berdasarkan total kekayaan (Coin + Bank + Nilai Item).
 """
 
+from collections import defaultdict
+
 from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config.settings import ADMIN_ID
 from database.database import get_session
-from database.models import User
-from utils.economy import calculate_net_worth
+from database.models import Inventory, User
+from utils.items import SHOP_ITEMS
 
 
 def _back_button() -> InlineKeyboardMarkup:
@@ -17,15 +19,35 @@ def _back_button() -> InlineKeyboardMarkup:
 
 
 async def _build_ranking_text(session) -> str:
-    result = await session.execute(
-        select(User).where(User.is_banned.is_(False), User.telegram_id != ADMIN_ID)
+    # PERF: versi lama memanggil calculate_net_worth() per user di dalam loop, yang
+    # masing-masing melakukan 1 query inventory sendiri -> total 1 + N query (N+1).
+    # Di sini kita ambil semua user + SEMUA baris inventory HANYA dalam 2 query total,
+    # lalu agregasi nilai item dilakukan di memory (harga item statis dari SHOP_ITEMS,
+    # bukan dari DB, jadi tidak bisa dihitung lewat SQL JOIN langsung).
+    users_result = await session.execute(
+        select(User.id, User.telegram_id, User.username, User.full_name, User.coin, User.bank).where(
+            User.is_banned.is_(False), User.telegram_id != ADMIN_ID
+        )
     )
-    users = result.scalars().all()
+    users = users_result.all()
 
-    scored = []
-    for u in users:
-        net_worth = await calculate_net_worth(session, u)
-        scored.append((u, net_worth))
+    if not users:
+        return "🏆 Belum ada data pemain untuk ranking."
+
+    user_ids = [u.id for u in users]
+
+    inv_result = await session.execute(
+        select(Inventory.user_id, Inventory.item_name, Inventory.quantity).where(Inventory.user_id.in_(user_ids))
+    )
+    item_value_by_user: dict[int, int] = defaultdict(int)
+    for user_id, item_name, quantity in inv_result.all():
+        price = SHOP_ITEMS.get(item_name, {}).get("price", 0)
+        item_value_by_user[user_id] += price * quantity
+
+    scored = [
+        (u, u.coin + u.bank + item_value_by_user.get(u.id, 0))
+        for u in users
+    ]
 
     scored.sort(key=lambda pair: pair[1], reverse=True)
     top10 = scored[:10]

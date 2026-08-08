@@ -27,6 +27,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("🏆 Ranking", callback_data="menu_ranking")],
         [InlineKeyboardButton("📜 Achievement", callback_data="menu_achievement"),
          InlineKeyboardButton("🎉 Event", callback_data="menu_event")],
+        [InlineKeyboardButton("❤️ Pasangan", callback_data="menu_couple")],
     ]
     return InlineKeyboardMarkup(keyboard)
 

@@ -6,21 +6,34 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from database.database import get_session
-from utils.economy import get_inventory, get_or_create_user
+from utils.economy import get_or_create_user
 from utils.economy import xp_required_for_level
-from database.models import Pet
-from sqlalchemy import select
+from utils.couple import get_active_couple, get_partner_display
+from database.models import Inventory, Pet
+from sqlalchemy import func, select
 
 
 async def _build_profile_text(session, user, display_name: str) -> str:
-    items = await get_inventory(session, user.id)
-    total_items = sum(inv.quantity for inv in items)
+    # Sebelumnya profile melakukan 2 query terpisah (get_inventory lalu Pet select).
+    # Untuk profile kita hanya butuh TOTAL quantity item (bukan detail per-item), jadi
+    # cukup 1 query SUM() di level database (tidak menarik semua baris inventory ke Python).
+    total_items = (
+        await session.execute(select(func.coalesce(func.sum(Inventory.quantity), 0)).where(Inventory.user_id == user.id))
+    ).scalar_one()
 
-    pet_result = await session.execute(select(Pet).where(Pet.user_id == user.id))
-    pets = pet_result.scalars().all()
-    pet_text = ", ".join(f"{p.pet_type} (Lv.{p.pet_level})" for p in pets) if pets else "Tidak ada"
+    pet_result = await session.execute(select(Pet.pet_type, Pet.pet_level).where(Pet.user_id == user.id))
+    pets = pet_result.all()
+    pet_text = ", ".join(f"{name} (Lv.{level})" for name, level in pets) if pets else "Tidak ada"
 
     xp_needed = xp_required_for_level(user.level)
+
+    # Info pasangan bersifat opsional (tidak wajib untuk profile), tapi query-nya sudah
+    # memakai partial unique index jadi murah (index lookup, bukan scan).
+    couple = await get_active_couple(session, user.id)
+    partner_line = ""
+    if couple is not None:
+        partner_name = await get_partner_display(session, couple, user.id)
+        partner_line = f"\n❤️ Pasangan: {partner_name}"
 
     return (
         "👤 Profil\n\n"
@@ -34,6 +47,7 @@ async def _build_profile_text(session, user, display_name: str) -> str:
         f"🚗 Kendaraan: {user.vehicle or 'Belum punya'}\n\n"
         f"🎒 Inventory: {total_items} item\n"
         f"🐶 Pet: {pet_text}"
+        f"{partner_line}"
     )
 
 

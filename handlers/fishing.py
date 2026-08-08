@@ -21,8 +21,9 @@ def _back_button() -> InlineKeyboardMarkup:
 
 
 async def _has_pancing(session, user_id: int) -> bool:
+    # PERF: hanya SELECT kolom id, bukan seluruh row, karena hanya perlu tahu keberadaannya.
     result = await session.execute(
-        select(Inventory).where(Inventory.user_id == user_id, Inventory.item_name == "Pancing")
+        select(Inventory.id).where(Inventory.user_id == user_id, Inventory.item_name == "Pancing").limit(1)
     )
     return result.scalar_one_or_none() is not None
 

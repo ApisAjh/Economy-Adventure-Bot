@@ -340,20 +340,34 @@ async def _admin_delete_account(message, parts: list[str]) -> None:
 
 
 async def _build_stats_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    # PERF: versi lama melakukan 8 query COUNT/SUM terpisah secara berurutan (8 round-trip
+    # ke database). Digabung menjadi 1 SELECT dengan scalar subquery per metrik -> 1 round-trip.
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    stats_query = select(
+        select(func.count(User.id)).scalar_subquery().label("total_user"),
+        select(func.count(User.id)).where(User.last_login >= today_start).scalar_subquery().label("active_today"),
+        select(func.coalesce(func.sum(User.coin + User.bank), 0)).scalar_subquery().label("total_coin"),
+        select(func.count(BankTransaction.id)).scalar_subquery().label("total_transactions"),
+        select(func.coalesce(func.sum(Inventory.quantity), 0)).scalar_subquery().label("total_item"),
+        select(func.count(Pet.id)).scalar_subquery().label("total_pet"),
+        select(func.count(User.id)).where(User.house.is_not(None)).scalar_subquery().label("total_house"),
+        select(func.count(User.id)).where(User.vehicle.is_not(None)).scalar_subquery().label("total_vehicle"),
+    )
+
     async with get_session() as session:
-        total_user = (await session.execute(select(func.count(User.id)))).scalar_one()
+        row = (await session.execute(stats_query)).one()
 
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        active_today = (
-            await session.execute(select(func.count(User.id)).where(User.last_login >= today_start))
-        ).scalar_one()
-
-        total_coin = (await session.execute(select(func.coalesce(func.sum(User.coin + User.bank), 0)))).scalar_one()
-        total_transactions = (await session.execute(select(func.count(BankTransaction.id)))).scalar_one()
-        total_item = (await session.execute(select(func.coalesce(func.sum(Inventory.quantity), 0)))).scalar_one()
-        total_pet = (await session.execute(select(func.count(Pet.id)))).scalar_one()
-        total_house = (await session.execute(select(func.count(User.id)).where(User.house.is_not(None)))).scalar_one()
-        total_vehicle = (await session.execute(select(func.count(User.id)).where(User.vehicle.is_not(None)))).scalar_one()
+    (
+        total_user,
+        active_today,
+        total_coin,
+        total_transactions,
+        total_item,
+        total_pet,
+        total_house,
+        total_vehicle,
+    ) = row
 
     maintenance = context.bot_data.get("maintenance_mode", False)
 
